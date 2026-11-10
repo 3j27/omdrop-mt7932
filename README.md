@@ -153,6 +153,19 @@ adds the relay-owned IPv6 to `lo0`, and forwards `:8771` to
 Received files are extracted under `~/Downloads/AirDrop/<timestamp>/`.
 Receiver log: `~/.local/state/omdrop/receive.log`.
 
+## Icon
+
+AirDrop chooses the receiver's icon from `ReceiverModelName` in the
+`/Discover` response; the sender looks it up in its built-in Apple device
+table.  `omdrop-recv` defaults to `Linux`, which macOS shows as the
+generic person.
+
+Set `OMDROP_MODEL` to a known Apple model identifier to get that device's
+icon (`MacBookPro18,1`, `Mac14,2`, `iPad13,4`, ...).  AirDrop has no field
+for a custom image, so a custom Omarchy logo would require changing the
+sender's icon assets or matching an Apple-signed contact record; a
+receiver cannot upload its own icon.
+
 ## Troubleshooting
 
 - **Mac does not list us:** check `omdrop status`, then

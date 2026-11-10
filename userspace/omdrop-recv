@@ -22,6 +22,7 @@ CERT = os.path.join(STATE, "cert.pem")
 KEY = os.path.join(STATE, "key.pem")
 PORT = int(os.environ.get("OMDROP_PORT", "8771"))
 NAME = os.environ.get("OMDROP_NAME", socket.gethostname().split(".")[0])
+MODEL = os.environ.get("OMDROP_MODEL", "Linux")
 
 
 def log(msg):
@@ -142,7 +143,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass
             self._reply({
                 "ReceiverComputerName": NAME,
-                "ReceiverModelName": "Linux",
+                "ReceiverModelName": MODEL,
                 "ReceiverMediaCapabilities": b'{"Version":1}',
             })
             return
@@ -156,7 +157,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 log("ask from %r files=%r" % (req.get("SenderComputerName"), files))
             except Exception as e:
                 log("ask parse error %r" % (e,))
-            self._reply({"ReceiverComputerName": NAME, "ReceiverModelName": "Linux"})
+            self._reply({"ReceiverComputerName": NAME, "ReceiverModelName": MODEL})
             return
         if path == "/Upload":
             stamp = time.strftime("%Y%m%d-%H%M%S") + "-%d" % (int(time.time() * 1000) % 1000)

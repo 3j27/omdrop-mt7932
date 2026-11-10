@@ -3,6 +3,9 @@ Description=omdrop AirDrop receiver
 After=network.target
 
 [Service]
+# AirDrop picks the icon from this model string.  "Linux" is the
+# generic person; a known Apple model shows that device icon.
+# Environment=OMDROP_MODEL=MacBookPro18,1
 ExecStart=/usr/local/lib/omdrop/omdrop-recv
 Restart=always
 RestartSec=3
