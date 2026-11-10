@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""omdrop AirDrop receiver.
+
+Listens for the sender's TLS connection, answers /Discover and /Ask, and
+stores /Upload archives under ~/Downloads/AirDrop/<timestamp>/.
+"""
+import gzip
+import http.server
+import io
+import os
+import plistlib
+import socket
+import ssl
+import subprocess
+import sys
+import time
+import zlib
+
+STATE = os.path.expanduser(os.environ.get("OMDROP_STATE", "~/.local/state/omdrop"))
+DL = os.path.expanduser(os.environ.get("OMDROP_DL", "~/Downloads/AirDrop"))
+CERT = os.path.join(STATE, "cert.pem")
+KEY = os.path.join(STATE, "key.pem")
+PORT = int(os.environ.get("OMDROP_PORT", "8771"))
+NAME = os.environ.get("OMDROP_NAME", socket.gethostname().split(".")[0])
+
+
+def log(msg):
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "receive.log"), "a") as f:
+        f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+
+
+def ensure_cert():
+    os.makedirs(STATE, exist_ok=True)
+    if os.path.exists(CERT) and os.path.exists(KEY):
+        return
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", KEY, "-out", CERT, "-days", "3650",
+        "-subj", "/CN=%s.local" % NAME,
+        "-addext", "subjectAltName=DNS:%s.local" % NAME,
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def inflate(data):
+    """Return the CPIO archive inside a DVZip or gzip /Upload body."""
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    out = bytearray()
+    i = 0
+    while i + 4 <= len(data):
+        n = int.from_bytes(data[i:i + 4], "big")
+        i += 4
+        if n == 0:
+            break
+        chunk = data[i:i + n]
+        if len(chunk) < n:
+            break
+        i += n
+        try:
+            out += zlib.decompress(chunk)
+        except zlib.error:
+            return None
+    return bytes(out)
+
+
+def extract(archive, dest):
+    if archive[:6] in (b"070707", b"070701"):
+        tmp = os.path.join(dest, ".upload.cpio")
+        with open(tmp, "wb") as f:
+            f.write(archive)
+        subprocess.run(["cpio", "-idm", "--quiet"], cwd=dest,
+                       stdin=open(tmp, "rb"), check=False)
+        os.unlink(tmp)
+        return True
+    return False
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        log("%s %s" % (self.client_address, fmt % args))
+
+    def _read_chunked(self, sink):
+        total = 0
+        while True:
+            line = self.rfile.readline(65536).strip()
+            if not line:
+                break
+            size = int(line.split(b";")[0], 16)
+            if size == 0:
+                self.rfile.readline(65536)
+                break
+            left = size
+            while left:
+                chunk = self.rfile.read(min(left, 1 << 20))
+                if not chunk:
+                    return total
+                sink.write(chunk)
+                left -= len(chunk)
+                total += len(chunk)
+            self.rfile.readline(65536)
+        return total
+
+    def _body_to(self, sink):
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            return self._read_chunked(sink)
+        n = int(self.headers.get("Content-Length") or 0)
+        left = n
+        while left:
+            chunk = self.rfile.read(min(left, 1 << 20))
+            if not chunk:
+                break
+            sink.write(chunk)
+            left -= len(chunk)
+        return n - left
+
+    def _reply(self, obj=None, code=200, close=False):
+        body = plistlib.dumps(obj, fmt=plistlib.FMT_BINARY) if obj is not None else b""
+        self.send_response(code)
+        if obj is not None:
+            self.send_header("Content-Type", "application/x-apple-binary-plist")
+        self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path == "/Discover":
+            buf = io.BytesIO()
+            self._body_to(buf)
+            body = buf.getvalue()
+            try:
+                req = plistlib.loads(body)
+                log("discover from %r" % (req.get("SenderComputerName"),))
+            except Exception:
+                pass
+            self._reply({
+                "ReceiverComputerName": NAME,
+                "ReceiverModelName": "Linux",
+                "ReceiverMediaCapabilities": b'{"Version":1}',
+            })
+            return
+        if path == "/Ask":
+            buf = io.BytesIO()
+            self._body_to(buf)
+            body = buf.getvalue()
+            try:
+                req = plistlib.loads(body)
+                files = [f.get("FileName") for f in (req.get("Files") or [])]
+                log("ask from %r files=%r" % (req.get("SenderComputerName"), files))
+            except Exception as e:
+                log("ask parse error %r" % (e,))
+            self._reply({"ReceiverComputerName": NAME, "ReceiverModelName": "Linux"})
+            return
+        if path == "/Upload":
+            stamp = time.strftime("%Y%m%d-%H%M%S") + "-%d" % (int(time.time() * 1000) % 1000)
+            dest = os.path.join(DL, stamp)
+            os.makedirs(dest, exist_ok=True)
+            raw = os.path.join(dest, ".upload.raw")
+            with open(raw, "wb") as f:
+                total = self._body_to(f)
+            archive = inflate(open(raw, "rb").read())
+            ok = archive is not None and extract(archive, dest)
+            if archive is not None and not ok:
+                with open(os.path.join(dest, "upload.bin"), "wb") as f:
+                    f.write(archive)
+            log("upload %d bytes -> %s (%s)" % (total, dest,
+                                                "extracted" if ok else "raw"))
+            os.unlink(raw)
+            self._reply(None, close=True)
+            return
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        self._reply(None)
+
+
+class V6Server(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
+def main():
+    ensure_cert()
+    os.makedirs(DL, exist_ok=True)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(CERT, KEY)
+    srv = V6Server(("::", PORT), Handler)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    log("receiver listening on [::]:%d, saving to %s" % (PORT, DL))
+    print("omdrop receiver on [::]:%d -> %s" % (PORT, DL), flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

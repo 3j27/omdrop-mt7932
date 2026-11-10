@@ -1,0 +1,15 @@
+# omdrop configuration
+#
+# The AWDL peer.  If STUDIO is set, omdrop SSHes to it and reads the
+# current awdl0 MAC, which changes every AWDL session.  A fixed PEER
+# overrides that.
+STUDIO=<studio-host>
+STUDIO_USER=<ssh-user>
+PEER=
+
+# The service announced to the sender.  ADVERTISE_AAAA must be an address
+# that the relay host owns (the Studio adds it to lo0); ADVERTISE_IPV4 is
+# this machine on the LAN, to which the relay forwards the TCP stream.
+ADVERTISE_HOST=omarchy-awdl.local
+ADVERTISE_IPV4=<neo-lan-ip>
+ADVERTISE_AAAA=<relay-owned-ipv6>

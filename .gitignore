@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.ko
+build.log
+build-result.json

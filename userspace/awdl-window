@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# awdl-window: the MT7932 data-path gate and a bounded advertising window,
+# without omdrop-core. This is the hardware proof in one command: enable the
+# firmware's AWDL session, prove it transmits (the same gate the Broadcom
+# backend uses: 20 advertisement frames, >= 15 dmesg tx completions), then
+# advertise _airdrop._tcp.local for a while so a nearby iPhone's AirDrop
+# sheet is the oracle.
+#
+#   awdl-window [seconds]     window, default 30
+#   awdl-window --gate-only   just the gate
+#
+# Exit 0: gate passed (and, unless --gate-only, advertised).
+#      1: gate never saw transmit.
+#      2: not root / missing helpers.
+#      4: no awdl0 and it could not be created.
+set -uo pipefail
+umask 022
+LIB="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+IF=awdl0
+TRACE=/sys/module/mt7932_fullmac/parameters/awdl_trace
+MASTER_CHAN=${AWDL_MASTER_CHAN:-6}
+PEER_CHAN=${AWDL_PEER_CHAN:-44}
+DENSITY=${AWDL_DENSITY:-1}
+ENABLES=${AWDL_ENABLES:-3}
+GATE_MIN=15
+
+log(){ printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+die(){ local rc=$1; shift; log "awdl-window: $*"; exit "$rc"; }
+cmd(){ timeout --foreground 8 python3 "$LIB/mtk_awdl_cmd.py" -i "$1" "${@:2}" >/dev/null 2>&1; }
+find_sta(){
+  local n d
+  for n in /sys/class/net/*; do
+    n=${n##*/}; [[ $n == "$IF" ]] && continue
+    [[ -d /sys/class/net/$n/phy80211 ]] || continue
+    d=$(readlink -f "/sys/class/net/$n/device/driver" 2>/dev/null) || continue
+    [[ ${d##*/} == mt7932* ]] && { printf '%s' "$n"; return 0; }
+  done
+  return 1
+}
+
+[[ $EUID == 0 ]] || die 2 "needs root"
+[[ -x "$LIB/awdl-up" && -f "$LIB/awdl-airdrop-adv.py" ]] || die 2 "helpers missing under $LIB"
+
+GATE_ONLY=0
+SECONDS_=30
+while (( $# )); do
+  case $1 in
+    --gate-only) GATE_ONLY=1 ;;
+    *) [[ $1 =~ ^[0-9]+$ ]] || die 2 "usage: $0 [seconds] [--gate-only]"; SECONDS_=$1 ;;
+  esac
+  shift
+done
+
+STA=$(find_sta) || die 4 "no mt7932 station interface"
+ip -o link show "$IF" >/dev/null 2>&1 || "$LIB/awdl-up" || die 4 "no $IF"
+
+ip link set "$IF" up 2>/dev/null || die 4 "cannot bring $IF up"
+ip link set "$IF" promisc on 2>/dev/null; ip link set "$IF" allmulticast on 2>/dev/null
+
+probe(){
+  local was n
+  [[ -w $TRACE ]] && { was=$(cat "$TRACE"); printf 1 > "$TRACE"; }
+  dmesg -C
+  python3 "$LIB/awdl-airdrop-adv.py" --iface "$IF" --count 20 --interval 0.02 --seq 9000 --neutral >/dev/null 2>&1 \
+    || { [[ -n ${was:-} ]] && printf '%s' "$was" > "$TRACE"; return 1; }
+  sleep 3
+  n=$(dmesg | awk '/awdl txstatus/' | grep -c 'tx_status=0x' || true)
+  [[ -n ${was:-} ]] && printf '%s' "$was" > "$TRACE"
+  printf '%s' "$n"
+}
+
+enable(){
+  cmd "$STA" enable "$MASTER_CHAN" "$PEER_CHAN" "$DENSITY" || return 1
+  log "session enabled: master=$MASTER_CHAN peer=$PEER_CHAN density=$DENSITY"
+  ip link set "$IF" promisc on 2>/dev/null; ip link set "$IF" allmulticast on 2>/dev/null
+}
+
+disable(){ cmd "$STA" disable; }
+
+cleanup(){
+  disable
+  ip link set "$IF" promisc off 2>/dev/null; ip link set "$IF" allmulticast off 2>/dev/null
+}
+trap cleanup EXIT
+
+rx0=$(cat /sys/class/net/$IF/statistics/rx_packets 2>/dev/null || echo 0)
+
+# --- the gate ---
+enable || die 1 "firmware refused the session (channels country-permitted? session busy?)"
+sleep 3
+n=$(probe) || die 1 "the probe frames never left the stack"
+log "gate: probe 20 frames -> $n completions"
+if (( n < GATE_MIN )); then
+  for try in $(seq 1 "$ENABLES"); do
+    disable; sleep 2
+    enable || continue
+    for wait in 7 30; do
+      sleep "$wait"
+      n=$(probe) || continue 2
+      log "gate: enable $try, probe 20 frames -> $n completions"
+      if (( n >= GATE_MIN )); then break 2; fi
+    done
+  done
+  (( n >= GATE_MIN )) || die 1 "the data path never opened: $n completions"
+fi
+log "gate open: the firmware transmits AWDL data"
+
+if (( GATE_ONLY )); then exit 0; fi
+
+# --- the window: advertise so a peer's own sheet can see us ---
+log "advertising _airdrop._tcp.local for ${SECONDS_}s"
+end=$(( $(date +%s) + SECONDS_ ))
+while (( $(date +%s) < end )); do
+  python3 "$LIB/awdl-airdrop-adv.py" --iface "$IF" --count 6 --interval 0.2 --seq 9100 >/dev/null 2>&1
+  sleep 2
+done
+rx1=$(cat /sys/class/net/$IF/statistics/rx_packets 2>/dev/null || echo 0)
+log "window closed: rx $rx0 -> $rx1"
+(( rx1 > rx0 )) && log "the radio also RECEIVED during the window" || log "nothing was received during the window"
+exit 0

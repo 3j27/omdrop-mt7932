@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AirDrop (omdrop)
+Comment=Receive and send files over Apple AirDrop
+Exec=omdrop folder
+Icon=network-wireless
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=airdrop;omdrop;drop;files;

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.omdrop.relay</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/usr/local/libexec/omdrop/relay-start.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OMDROP_TARGET_IP</key>
+        <string>__TARGET_IP__</string>
+        <key>OMDROP_ULA</key>
+        <string>__ULA__</string>
+        <key>OMDROP_LL</key>
+        <string>__LL__</string>
+        <key>OMDROP_TARGET_PORT</key>
+        <string>8771</string>
+        <key>OMDROP_PORT</key>
+        <string>8771</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/omdrop-relay.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/omdrop-relay.log</string>
+</dict>
+</plist>

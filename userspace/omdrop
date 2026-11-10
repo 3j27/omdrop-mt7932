@@ -1,0 +1,38 @@
+#!/bin/sh
+# omdrop: receive and send files over Apple AirDrop on the MT7932.
+set -u
+LIB=/usr/local/lib/omdrop
+FOLDER=${OMDROP_DL:-$HOME/Downloads/AirDrop}
+
+case "${1:-status}" in
+status)
+    printf 'AWDL interface: %s\n' "$(cat /sys/class/net/awdl0/address 2>/dev/null || echo 'not created')"
+    printf 'AWDL daemon:    %s\n' "$(systemctl is-active omdrop-awdl 2>/dev/null || true)"
+    printf 'Receiver:       %s\n' "$(systemctl --user is-active omdrop-receive 2>/dev/null || true)"
+    printf 'Receive folder: %s\n' "$FOLDER"
+    [ -d "$FOLDER" ] && ls -1t "$FOLDER" | head -5
+    ;;
+up)
+    sudo systemctl start omdrop-awdl
+    ;;
+down)
+    sudo systemctl stop omdrop-awdl
+    ;;
+restart)
+    sudo systemctl restart omdrop-awdl
+    ;;
+receive)
+    exec "$LIB/omdrop-recv"
+    ;;
+send)
+    shift
+    exec "$LIB/omdrop-send" "$@"
+    ;;
+folder)
+    mkdir -p "$FOLDER"
+    xdg-open "$FOLDER" >/dev/null 2>&1 &
+    ;;
+*)
+    echo "usage: omdrop {status|up|down|restart|receive|send HOST PORT FILE|folder}"
+    ;;
+esac

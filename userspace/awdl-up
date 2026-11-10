@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Bring awdl0 into existence on the MT7932, configured but NOT advertising.
+#
+#   awdl-up            create + configure awdl0 (idempotent; safe to re-run)
+#   awdl-up --status   print what exists, exit 0 if awdl0 is ready
+#
+# The Broadcom sibling's contract, restated for MediaTek: create is an
+# nl80211 vendor command (MT7932_VNDR_CMDS_AWDL, op 0); the driver asks the
+# firmware to activate its second BSS and awdl0 appears from the presence
+# event, so create is asynchronous and this script waits for the interface.
+# The AWDL MAC is the fixed AWDL BSSID; the firmware reprograms the BSS
+# identity when the link is down and the session is off, which is exactly
+# this script's state.
+set -uo pipefail
+umask 022
+LIB="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+IF=awdl0
+AWDL_BSSID=00:25:00:ff:94:73
+WAIT_CREATE=${AWDL_WAIT_CREATE:-10}      # seconds to wait for the present event
+
+log(){ printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+die(){ local rc=$1; shift; log "awdl-up: $*"; exit "$rc"; }
+
+find_sta(){
+  local n d
+  for n in /sys/class/net/*; do
+    n=${n##*/}
+    [[ $n == "$IF" ]] && continue
+    [[ -d /sys/class/net/$n/phy80211 ]] || continue
+    d=$(readlink -f "/sys/class/net/$n/device/driver" 2>/dev/null) || continue
+    [[ ${d##*/} == mt7932* ]] && { printf '%s' "$n"; return 0; }
+  done
+  return 1
+}
+
+status(){
+  if ! ip -o link show "$IF" >/dev/null 2>&1; then
+    printf 'awdl-up: no %s (vendor create has not run or the firmware never reported the BSS)\n' "$IF"
+    return 4
+  fi
+  local mac state
+  mac=$(cat /sys/class/net/$IF/address 2>/dev/null)
+  state=$(cat /sys/class/net/$IF/operstate 2>/dev/null)
+  printf 'awdl-up: %s exists, mac %s, link %s\n' "$IF" "$mac" "$state"
+  [[ $mac == "$AWDL_BSSID" ]] || { printf 'awdl-up: address is not the AWDL BSSID\n'; return 3; }
+  return 0
+}
+
+[[ $EUID == 0 ]] || die 2 "needs root"
+
+if [[ ${1:-} == --status ]]; then
+  status
+  exit $?
+fi
+(( $# == 0 )) || die 2 "usage: $0 [--status]"
+
+STA=$(find_sta) || die 4 "no mt7932 station interface under /sys/class/net"
+
+if ip -o link show "$IF" >/dev/null 2>&1; then
+  status || exit $?
+  exit 0
+fi
+
+log "asking the firmware for the AWDL BSS on $STA"
+timeout --foreground 15 python3 "$LIB/mtk_awdl_cmd.py" -i "$STA" create \
+  || die 3 "vendor create failed (driver without CONFIG_MT7932_AWDL, or the awdl=0 module parameter?)"
+
+# The present event is what registers the netdev; give it a moment.
+for _ in $(seq $((WAIT_CREATE * 2))); do
+  ip -o link show "$IF" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+ip -o link show "$IF" >/dev/null 2>&1 || die 3 "awdl0 did not appear within ${WAIT_CREATE}s"
+
+ip link set "$IF" down
+ip link set "$IF" address "$AWDL_BSSID" || die 3 "cannot set the AWDL BSSID"
+log "awdl0 configured: mac $AWDL_BSSID, idle; the session is off until a window opens"

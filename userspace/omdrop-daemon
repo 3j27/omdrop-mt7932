@@ -1,0 +1,67 @@
+#!/bin/bash
+# Root daemon: keep awdl0 up, peer the configured Apple device, and
+# advertise _airdrop._tcp over AWDL.
+set -u
+LIB=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+CONF=${OMDROP_CONFIG:-/etc/omdrop/config}
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+STUDIO=${STUDIO:-}
+STUDIO_USER=${STUDIO_USER:-$(id -un 1000 2>/dev/null || echo admin)}
+PEER=${PEER:-}
+HOST=${ADVERTISE_HOST:-$(hostname -s).local}
+IPV4=${ADVERTISE_IPV4:-}
+AAAA=${ADVERTISE_AAAA:-}
+log() { echo "omdrop: $*"; }
+
+studio_mac() {
+    [ -z "$STUDIO" ] && return
+    sudo -u "$STUDIO_USER" timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 "$STUDIO" \
+        'ifconfig awdl0 2>/dev/null | awk "/ether /{print \$2}"' 2>/dev/null
+}
+
+set_wtbl() {
+    [ -n "${WTBL:-}" ] && echo "$WTBL" > /sys/module/mt7932_fullmac/parameters/awdl_probe_wtbl
+}
+
+bringup() {
+    log "bringup peer=${1:-none}"
+    echo 15 > /sys/module/mt7932_fullmac/parameters/awdl_rx_filter
+    echo 0 > /sys/module/mt7932_fullmac/parameters/awdl_probe_wtbl
+    OUT=$("$LIB/omdrop-bringup.sh" "${1:-}" 2>&1)
+    echo "$OUT" | sed 's/^/omdrop:   /'
+    WTBL=$(echo "$OUT" | sed -n 's/.*wtbl=\([0-9]*\).*/\1/p' | tail -1)
+    set_wtbl
+}
+
+ARGS=(--iface awdl0 --count 1 --interval 0 --host "$HOST")
+[ -n "$IPV4" ] && ARGS+=(--host-ipv4 "$IPV4")
+[ -n "$AAAA" ] && ARGS+=(--aaaa "$AAAA")
+
+PEER_MAC=$PEER
+bringup "$PEER_MAC"
+LAST_MAC=$PEER_MAC
+LAST_POLL=0
+
+while true; do
+    if ! ip link show awdl0 >/dev/null 2>&1; then
+        log "awdl0 missing, rebuilding"
+        bringup "$LAST_MAC"
+    fi
+
+    now=$(date +%s)
+    if [ -n "$STUDIO" ] && [ $((now - LAST_POLL)) -ge 12 ]; then
+        LAST_POLL=$now
+        M=$(studio_mac)
+        if [ -n "$M" ] && [ "$M" != "$LAST_MAC" ]; then
+            log "peer address $LAST_MAC -> $M"
+            bringup "$M"
+            LAST_MAC=$M
+        fi
+    fi
+
+    set_wtbl
+    python3 "$LIB/omdrop-adv.py" "${ARGS[@]}" >/dev/null 2>&1
+    sleep 0.6
+done

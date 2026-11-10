@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Send one file over the AirDrop TCP/TLS flow (/Discover, /Ask, /Upload)."""
+import gzip
+import os
+import plistlib
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import uuid
+
+
+def http(sock, path, body, extra=None):
+    headers = {
+        "Host": "airdrop",
+        "Content-Length": str(len(body)),
+        "Content-Type": "application/x-apple-binary-plist",
+        "Connection": "keep-alive",
+    }
+    if extra:
+        headers.update(extra)
+    req = "POST %s HTTP/1.1\r\n" % path
+    req += "".join("%s: %s\r\n" % (k, v) for k, v in headers.items())
+    req += "\r\n"
+    sock.sendall(req.encode() + body)
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise RuntimeError("closed before response")
+        buf += chunk
+    head, rest = buf.split(b"\r\n\r\n", 1)
+    status = int(head.split(b" ")[1])
+    clen = 0
+    for line in head.split(b"\r\n")[1:]:
+        if line.lower().startswith(b"content-length:"):
+            clen = int(line.split(b":")[1])
+    body = rest
+    while len(body) < clen:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    return status, body
+
+
+def main():
+    host = sys.argv[1]
+    port = int(sys.argv[2])
+    path = sys.argv[3]
+    name = os.path.basename(path)
+    size = os.path.getsize(path)
+    tid = str(uuid.uuid4()).upper()
+    sid = str(uuid.uuid4()).upper()
+
+    with tempfile.TemporaryDirectory() as td:
+        subprocess.run(["cp", path, os.path.join(td, name)], check=True)
+        listing = ("%s\n" % name).encode()
+        cpio = subprocess.run(["cpio", "-o", "-H", "odc"], cwd=td,
+                              input=listing, stdout=subprocess.PIPE, check=True)
+        archive = gzip.compress(cpio.stdout)
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    raw = socket.create_connection((host, port), 8)
+    sock = ctx.wrap_socket(raw, server_hostname=host)
+
+    disc = plistlib.dumps({
+        "SenderComputerName": "omarchy-awdl",
+        "SenderModelName": "Linux",
+        "SenderID": sid,
+    }, fmt=plistlib.FMT_BINARY)
+    print("discover", http(sock, "/Discover", disc)[0])
+
+    ask = plistlib.dumps({
+        "TransferID": {"id": tid},
+        "TransferType": {"files": {}},
+        "SenderComputerName": "omarchy-awdl",
+        "SenderModelName": "Linux",
+        "SenderID": sid,
+        "BundleID": "com.apple.finder",
+        "Files": [{
+            "FileName": name,
+            "FileType": "public.data",
+            "FileSize": size,
+            "FileBomPath": "./" + name,
+            "FileIsDirectory": False,
+        }],
+    }, fmt=plistlib.FMT_BINARY)
+    print("ask", http(sock, "/Ask", ask)[0])
+
+    status, body = http(sock, "/Upload", archive, {
+        "Content-Type": "application/x-cpio",
+        "TransferID": tid,
+    })
+    print("upload", status, "sent", len(archive), "bytes for", name)
+
+
+if __name__ == "__main__":
+    main()
