@@ -56,6 +56,16 @@ The kernel driver is in the `aurora-silicon/linux` fork:
   Apple's driver does”.
 - Squashed single-commit alternative:
   <https://github.com/3j27/linux/tree/mt7932/awdl-airdrop-squashed>
+- Base commit `068dfce19780` (2026-11-07), builds against
+  `7.2.11-15-1-ARCH`.
+- Merged with upstream (7.3.0) on `mt7932/awdl-airdrop-7.3`
+  <https://github.com/3j27/linux/tree/mt7932/awdl-airdrop-7.3>; it
+  compiles, but its module targets 7.3 and has not been run on hardware.
+
+Upstream `integration/aurora` has since grown its own, different
+experimental MT7932 AWDL implementation, and moved to 7.3.  What that
+means for rebasing, and what other projects have done, is in
+[`docs/UPSTREAM.md`](docs/UPSTREAM.md).
 
 The driver changes live in
 `drivers/net/wireless/mediatek/mt7932/` and add:
@@ -153,6 +163,19 @@ adds the relay-owned IPv6 to `lo0`, and forwards `:8771` to
 Received files are extracted under `~/Downloads/AirDrop/<timestamp>/`.
 Receiver log: `~/.local/state/omdrop/receive.log`.
 
+## Icon
+
+AirDrop chooses the receiver's icon from `ReceiverModelName` in the
+`/Discover` response; the sender looks it up in its built-in Apple device
+table.  `omdrop-recv` defaults to `Linux`, which macOS shows as the
+generic person.
+
+Set `OMDROP_MODEL` to a known Apple model identifier to get that device's
+icon (`MacBookPro18,1`, `Mac14,2`, `iPad13,4`, ...).  AirDrop has no field
+for a custom image, so a custom Omarchy logo would require changing the
+sender's icon assets or matching an Apple-signed contact record; a
+receiver cannot upload its own icon.
+
 ## Troubleshooting
 
 - **Mac does not list us:** check `omdrop status`, then
@@ -183,6 +206,7 @@ userspace/
   packaging/              install script, units, desktop entry, config
   studio/                 Mac relay installer and launchd daemon
 driver/                   helper notes/scripts for the kernel module
+docs/                     upstream status and rebase notes
 ```
 
 ## Related
